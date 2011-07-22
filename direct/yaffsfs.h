@@ -25,6 +25,10 @@
 #include "yaffscfg.h"
 #include "yportenv.h"
 
+#ifdef __rtems__
+#include <sys/types.h>
+typedef __loff_t loff_t;
+#endif
 
 //typedef long off_t;
 //typedef long dev_t;

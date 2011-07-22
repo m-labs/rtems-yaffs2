@@ -23,6 +23,21 @@ typedef unsigned char u8;
 typedef unsigned short u16;
 typedef unsigned u32;
 
+#ifdef __rtems__
+
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <errno.h>
+
+#define CONFIG_YAFFS_DIRECT 1
+#define CONFIG_YAFFS_SHORT_NAMES_IN_RAM 1
+#define CONFIG_YAFFS_YAFFS2 1
+#define CONFIG_YAFFS_PROVIDE_DEFS 1
+#define CONFIG_YAFFSFS_PROVIDE_VALUES 1
+#define NO_Y_INLINE 1
+
+#endif /* __rtems__ */
 
 #ifndef WIN32
 #include <sys/stat.h>
