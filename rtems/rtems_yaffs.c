@@ -36,6 +36,18 @@
 
 #include "rtems_yaffs.h"
 
+/* memory management */
+
+void *yaffsfs_malloc(size_t size)
+{
+	return malloc(size);
+}
+
+void yaffsfs_free(void *ptr)
+{
+	free(ptr);
+}
+
 /* locking */
 
 static void ylock(struct yaffs_dev *dev)
