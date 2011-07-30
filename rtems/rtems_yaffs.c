@@ -35,6 +35,7 @@
 #include "yaffs_packedtags2.h"
 
 #include "rtems_yaffs.h"
+
 /* locking */
 
 static void ylock(struct yaffs_dev *dev)
