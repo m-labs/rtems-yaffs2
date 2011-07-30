@@ -30,7 +30,6 @@
 
 #include "yportenv.h"
 
-#include "yaffs.h"
 #include "yaffs_guts.h"
 #include "yaffs_trace.h"
 #include "yaffs_packedtags2.h"

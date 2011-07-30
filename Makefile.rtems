@@ -31,7 +31,6 @@ LIB_PIECES = yaffs_ecc \
 	yaffs_packedtags1 \
 	yaffs_tagscompat \
 	yaffs_packedtags2 \
-	yaffs_tagsvalidity \
 	yaffs_nand \
 	yaffs_checkptrw \
 	direct/yaffs_qsort \
