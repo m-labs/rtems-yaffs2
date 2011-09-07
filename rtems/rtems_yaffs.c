@@ -790,6 +790,11 @@ int rtems_yaffs_mount_handler(rtems_filesystem_mount_table_entry_t *mt_entry, co
 	const rtems_yaffs_mount_data *mount_data = data;
 	struct yaffs_dev *dev = mount_data->dev;
 
+	if (dev->read_only && (mt_entry->options & RTEMS_FILESYSTEM_READ_WRITE) != 0) {
+		errno = EACCES;
+		return -1;
+	}
+
 	ylock(dev);
 	if (yaffs_guts_initialise(dev) == YAFFS_FAIL) {
 		yunlock(dev);
