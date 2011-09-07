@@ -30,12 +30,12 @@ unsigned int yaffs_trace_mask = YAFFS_TRACE_BAD_BLOCKS | YAFFS_TRACE_ALWAYS;
 
 unsigned int yaffs_wr_attempts;
 
-void *yaffs_malloc(size_t size)
+void *yaffsfs_malloc(size_t size)
 {
 	return malloc(size);
 }
 
-void yaffs_free(void *ptr)
+void yaffsfs_free(void *ptr)
 {
 	free(ptr);
 }
