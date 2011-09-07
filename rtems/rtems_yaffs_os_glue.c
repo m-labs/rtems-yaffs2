@@ -20,8 +20,7 @@
  */
 
 #include <stdlib.h>
-
-#include <rtems.h>
+#include <time.h>
 
 #include "yaffs_trace.h"
 #include "yaffs_osglue.h"
@@ -42,5 +41,5 @@ void yaffsfs_free(void *ptr)
 
 u32 yaffsfs_CurrentTime(void)
 {
-	return rtems_clock_get_ticks_since_boot();
+	return time(NULL);
 }
