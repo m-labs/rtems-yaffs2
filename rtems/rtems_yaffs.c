@@ -20,7 +20,7 @@
  */
 
 #include <rtems.h>
-#include <rtems/libio.h>
+#include <rtems/libio_.h>
 #include <rtems/seterr.h>
 #include <rtems/userenv.h>
 #include <errno.h>
@@ -633,7 +633,23 @@ static int ycb_fchmod(rtems_filesystem_location_info_t *loc, mode_t mode)
 
 static int ycb_fdatasync(rtems_libio_t *iop)
 {
-	return 0;
+	const rtems_filesystem_location_info_t *pathinfo = &iop->pathinfo;
+	struct yaffs_obj *obj = pathinfo->node_access;
+	struct yaffs_dev *dev = obj->my_dev;
+	int yc = YAFFS_OK;
+
+	ylock(dev);
+	yc = yaffs_flush_file(obj, 0, 1);
+	if (rtems_filesystem_is_root_location(pathinfo)) {
+		yaffs_flush_whole_cache(dev);
+	}
+	yunlock(dev);
+
+	if (yc == YAFFS_OK) {
+		return 0;
+	} else {
+		rtems_set_errno_and_return_minus_one(EIO);
+	}
 }
 
 static int ycb_dir_rmnod(rtems_filesystem_location_info_t *parent_loc, rtems_filesystem_location_info_t *pathloc)
