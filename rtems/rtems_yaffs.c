@@ -844,7 +844,7 @@ static const rtems_filesystem_operations_table yaffs_ops = {
 	.symlink_h = ycb_symlink,
 	.readlink_h = ycb_readlink,
 	.rename_h = ycb_rename,
-	.statvfs_h = NULL
+	.statvfs_h = ycb_statvfs
 };
 
 /* Yeah, who thought writing filesystem glue code could ever be so complicated? */
