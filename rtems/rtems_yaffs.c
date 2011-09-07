@@ -36,6 +36,8 @@
 
 #include "rtems_yaffs.h"
 
+#define MAX_SIZE 0x7fffffff
+
 /* locking */
 
 static void ylock(struct yaffs_dev *dev)
@@ -57,6 +59,11 @@ static void rtems_yaffs_os_unmount(struct yaffs_dev *dev)
 }
 
 /* Helper functions */
+
+static int is_valid_offset(rtems_off64_t offset)
+{
+	return (0 <= offset && offset <= MAX_SIZE);
+}
 
 static int is_path_divider(YCHAR ch)
 {
@@ -547,11 +554,12 @@ static ssize_t ycb_dir_read(rtems_libio_t *iop, void *buffer, size_t count)
 
 static rtems_off64_t ycb_dir_lseek(rtems_libio_t *iop, rtems_off64_t length, int whence)
 {
-	/* we don't support anything else than rewinding */
-	if((whence != SEEK_SET) || (length != 0))
-		rtems_set_errno_and_return_minus_one(ENOTSUP);
-	iop->offset = 0;
-	return 0;
+	/* We support only rewinding */
+	if (whence == SEEK_SET && length == 0) {
+		return 0;
+	} else {
+		rtems_set_errno_and_return_minus_one(EINVAL);
+	}
 }
 
 static int ycb_fstat(rtems_filesystem_location_info_t *loc, struct stat *buf)
@@ -676,7 +684,19 @@ static int ycb_dir_rmnod(rtems_filesystem_location_info_t *parent_loc, rtems_fil
 
 static int ycb_file_open(rtems_libio_t *iop, const char *pathname, uint32_t flag, uint32_t mode)
 {
-	/* nothing to do */
+	const rtems_filesystem_location_info_t *pathinfo = &iop->pathinfo;
+	struct yaffs_obj *obj = pathinfo->node_access;
+	struct yaffs_dev *dev = obj->my_dev;
+	int length = 0;
+
+	ylock(dev);
+	length = yaffs_get_obj_length(obj);
+	iop->size = length;
+	if ((iop->flags & LIBIO_FLAGS_APPEND) != 0) {
+		iop->offset = length;
+	}
+	yunlock(dev);
+
 	return 0;
 }
 
@@ -720,50 +740,46 @@ static ssize_t ycb_file_read(rtems_libio_t *iop, void *buffer, size_t count)
 
 static ssize_t ycb_file_write(rtems_libio_t *iop, const void *buffer, size_t count)
 {
-	struct yaffs_obj *obj;
-	struct yaffs_dev *dev;
-	ssize_t nw;
+	const rtems_filesystem_location_info_t *pathinfo = &iop->pathinfo;
+	struct yaffs_obj *obj = pathinfo->node_access;
+	struct yaffs_dev *dev = obj->my_dev;
+	rtems_off64_t offset = 0;
+	rtems_off64_t new_offset = 0;
+	ssize_t rv = -1;
 
-	obj = iop->pathinfo.node_access;
-	if(obj->my_dev->read_only) {
-		errno = EROFS;
-		return -1;
+	if (count == 0) {
+		return 0;
 	}
-	dev = obj->my_dev;
+
 	ylock(dev);
-	nw = yaffs_wr_file(obj, buffer, iop->offset, (int)count, 0);
-	yunlock(dev);
-	if(nw < 0) {
-		errno = ENOSPC;
-		return -1;
+	offset = iop->offset;
+	new_offset = offset + count;
+	if (is_valid_offset(new_offset)) {
+		rv = yaffs_wr_file(obj, buffer, offset, (int) count, 0);
+		if (rv > 0) {
+			new_offset = offset + rv;
+			iop->offset = new_offset;
+			if (iop->size < new_offset) {
+				iop->size = new_offset;
+			}
+		} else {
+			errno = ENOSPC;
+		}
+	} else {
+		errno = EINVAL;
 	}
-	return nw;
+	yunlock(dev);
+
+	return rv;
 }
 
 static rtems_off64_t ycb_file_lseek(rtems_libio_t *iop, rtems_off64_t length, int whence)
 {
-	struct yaffs_obj *obj;
-	struct yaffs_dev *dev;
-
-	obj = iop->pathinfo.node_access;
-	switch(whence) {
-		case SEEK_SET:
-			iop->offset = length;
-			break;
-		case SEEK_CUR:
-			iop->offset += length;
-			break;
-		case SEEK_END:
-			dev = obj->my_dev;
-			ylock(dev);
-			iop->offset = yaffs_get_obj_length(obj) + length;
-			yunlock(dev);
-			break;
-		default:
-			errno = EINVAL;
-			return -1;
+	if (is_valid_offset(iop->offset)) {
+		return 0;
+	} else {
+		rtems_set_errno_and_return_minus_one(EINVAL);
 	}
-	return iop->offset;
 }
 
 int ycb_file_ftruncate(rtems_libio_t *iop, rtems_off64_t length)
