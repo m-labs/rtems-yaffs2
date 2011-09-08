@@ -702,7 +702,14 @@ static int ycb_file_open(rtems_libio_t *iop, const char *pathname, uint32_t flag
 
 static int ycb_file_close(rtems_libio_t *iop)
 {
-	/* nothing to do */
+	const rtems_filesystem_location_info_t *pathinfo = &iop->pathinfo;
+	struct yaffs_obj *obj = pathinfo->node_access;
+	struct yaffs_dev *dev = obj->my_dev;
+
+	ylock(dev);
+	yaffs_flush_file(obj, 1, 0);
+	yunlock(dev);
+
 	return 0;
 }
 
