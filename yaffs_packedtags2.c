@@ -97,7 +97,7 @@ void yaffs_pack_tags2(struct yaffs_packed_tags2 *pt,
 {
 	yaffs_pack_tags2_tags_only(&pt->t, t);
 
-#ifndef RTEMS_MKYAFFS2IMAGE
+#ifndef NOR_MKYAFFS2IMAGE
 	if (tags_ecc)
 		yaffs_ecc_calc_other((unsigned char *)&pt->t,
 				    sizeof(struct yaffs_packed_tags2_tags_only),
@@ -153,7 +153,7 @@ void yaffs_unpack_tags2(struct yaffs_ext_tags *t, struct yaffs_packed_tags2 *pt,
 
 		int result;
 
-#ifdef RTEMS_MKYAFFS2IMAGE
+#ifdef NOR_MKYAFFS2IMAGE
 		result = 0;
 #else
 		struct yaffs_ecc_other ecc;

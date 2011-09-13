@@ -33,7 +33,7 @@
 #include <assert.h>
 #include "yaffs_guts.h"
 
-#ifndef RTEMS_MKYAFFS2IMAGE
+#ifndef NOR_MKYAFFS2IMAGE
 #include "yaffs_ecc.h"
 #endif
 
@@ -44,7 +44,7 @@ unsigned yaffs_trace_mask=0;
 #define MAX_OBJECTS 10000
 
 // Adjust these to match your NAND LAYOUT:
-#ifdef RTEMS_MKYAFFS2IMAGE
+#ifdef NOR_MKYAFFS2IMAGE
   #define chunkSize 512
   #define spareSize 16
   #define blockSize (128*1024)
@@ -206,11 +206,11 @@ static void shuffle_oob(char *spareData, struct yaffs_packed_tags2_tags_only *pt
 
 static int write_chunk(u8 *data, u32 id, u32 chunk_id, u32 n_bytes)
 {
-#ifdef RTEMS_MKYAFFS2IMAGE
+#ifdef NOR_MKYAFFS2IMAGE
 	u8 remainder[remainderSize];
 #endif
 	struct yaffs_ext_tags t;
-#ifdef RTEMS_MKYAFFS2IMAGE
+#ifdef NOR_MKYAFFS2IMAGE
 	struct yaffs_packed_tags2_tags_only pt;
 #else
 	struct yaffs_packed_tags2 pt;
@@ -237,7 +237,7 @@ static int write_chunk(u8 *data, u32 id, u32 chunk_id, u32 n_bytes)
 
 	memset(&pt, 0, sizeof(pt));
 
-#ifdef RTEMS_MKYAFFS2IMAGE
+#ifdef NOR_MKYAFFS2IMAGE
 	yaffs_pack_tags2_tags_only(&pt,&t);
 
 	if (convert_endian)
@@ -255,7 +255,7 @@ static int write_chunk(u8 *data, u32 id, u32 chunk_id, u32 n_bytes)
 
 	if (write(outFile,spareData,sizeof(spareData)) != sizeof(spareData))
 		fatal("write");
-#ifdef RTEMS_MKYAFFS2IMAGE
+#ifdef NOR_MKYAFFS2IMAGE
 	write_chunk_count++;
 	if (write_chunk_count == pagesPerBlock) {
 		write_chunk_count = 0;
@@ -372,7 +372,7 @@ static int write_object_header(int id, enum yaffs_obj_type t, struct stat *s, in
 static void pad_image(void)
 {
 	u8 data[chunkSize + spareSize];
-#ifdef RTEMS_MKYAFFS2IMAGE
+#ifdef NOR_MKYAFFS2IMAGE
 	u8 remainder[remainderSize];
 #endif
 	int padPages = (nPages % pagesPerBlock);
@@ -387,7 +387,7 @@ static void pad_image(void)
 		}
 	}
 
-#ifdef RTEMS_MKYAFFS2IMAGE
+#ifdef NOR_MKYAFFS2IMAGE
 	memset(remainder, 0xff, sizeof(remainder));
 	if (write(outFile,remainder,sizeof(remainder)) != sizeof(remainder))
 		fatal("write");

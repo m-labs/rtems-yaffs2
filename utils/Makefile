@@ -62,8 +62,8 @@ mkyaffsimage: $(MKYAFFSIMAGEOBJS) $(COMMONOBJS)
 mkyaffs2image: $(MKYAFFS2IMAGEOBJS) $(COMMONOBJS)
 	$(CC) -o $@ $^
 
-rtems-mkyaffs2image: CFLAGS:= $(CFLAGS) -DRTEMS_MKYAFFS2IMAGE
-rtems-mkyaffs2image: $(MKYAFFS2IMAGEOBJS)
+nor-mkyaffs2image: CFLAGS:= $(CFLAGS) -DNOR_MKYAFFS2IMAGE
+nor-mkyaffs2image: $(MKYAFFS2IMAGEOBJS)
 	$(CC) -o $@ $(MKYAFFS2IMAGEOBJS)
 
 clean:
