@@ -16,7 +16,7 @@
 
 #KERNELDIR = /usr/src/kernel-headers-2.4.18
 
-CFLAGS =    -O2 -Wall -DCONFIG_YAFFS_UTIL
+CFLAGS =   -O2 -Wall -DCONFIG_YAFFS_UTIL
 CFLAGS+=   -Wshadow -Wpointer-arith -Wwrite-strings -Wstrict-prototypes -Wmissing-declarations
 CFLAGS+=   -Wmissing-prototypes -Wredundant-decls -Wnested-externs -Winline
 
@@ -62,6 +62,10 @@ mkyaffsimage: $(MKYAFFSIMAGEOBJS) $(COMMONOBJS)
 mkyaffs2image: $(MKYAFFS2IMAGEOBJS) $(COMMONOBJS)
 	$(CC) -o $@ $^
 
+rtems-mkyaffs2image: CFLAGS:= $(CFLAGS) -DRTEMS_MKYAFFS2IMAGE
+rtems-mkyaffs2image: $(MKYAFFS2IMAGEOBJS)
+	$(CC) -o $@ $(MKYAFFS2IMAGEOBJS)
 
 clean:
 	rm -f $(COMMONOBJS) $(MKYAFFSIMAGEOBJS) $(MKYAFFS2IMAGEOBJS) $(ALL_LINKS) mkyaffsimage mkyaffs2image core
+	rm -f rtems-mkyaffs2image
