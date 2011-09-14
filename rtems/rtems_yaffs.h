@@ -24,12 +24,13 @@
 #include <rtems.h>
 #include <rtems/fs.h>
 
-#include "yportenv.h"
-#include "yaffs_guts.h"
-
 #ifdef __cplusplus
 extern "C" {
 #endif /* __cplusplus */
+
+/* Must be inside the extern "C" */
+#include "yportenv.h"
+#include "yaffs_guts.h"
 
 /**
  * @defgroup rtems_yaffs YAFFS Support for RTEMS
