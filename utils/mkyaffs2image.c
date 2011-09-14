@@ -31,8 +31,11 @@
 #include <unistd.h>
 #include <errno.h>
 #include <assert.h>
-#include "yaffs_ecc.h"
 #include "yaffs_guts.h"
+
+#ifndef NOR_MKYAFFS2IMAGE
+#include "yaffs_ecc.h"
+#endif
 
 #include "yaffs_packedtags2.h"
 
@@ -41,11 +44,26 @@ unsigned yaffs_trace_mask=0;
 #define MAX_OBJECTS 10000
 
 // Adjust these to match your NAND LAYOUT:
-#define chunkSize 2048
-#define spareSize 64
-#define pagesPerBlock 64
+#ifdef NOR_MKYAFFS2IMAGE
+  #define chunkSize 512
+  #define spareSize 16
+  #define blockSize (128*1024)
+  #define pagesPerBlock (blockSize/(chunkSize+spareSize))
+  #define remainderSize (blockSize%(chunkSize+spareSize))
+  static int write_chunk_count = 0;
+#else
+  #define chunkSize 2048
+  #define spareSize 64
+  #define pagesPerBlock 64
+#endif
 
+#define SWAP32(x)   ((((x) & 0x000000FF) << 24) | \
+                     (((x) & 0x0000FF00) << 8 ) | \
+                     (((x) & 0x00FF0000) >> 8 ) | \
+                     (((x) & 0xFF000000) >> 24))
 
+#define SWAP16(x)   ((((x) & 0x00FF) << 8) | \
+                     (((x) & 0xFF00) >> 8))
 
 typedef struct
 {
@@ -171,7 +189,15 @@ static void little_to_big_endian(struct yaffs_ext_tags *tagsPtr)
 #endif
 }
 
-static void shuffle_oob(char *spareData, struct yaffs_packed_tags2 *pt)
+static void yaffs_packed_tags2_tags_only_to_big_endian(struct yaffs_packed_tags2_tags_only *ptt)
+{
+	ptt->seq_number = SWAP32(ptt->seq_number);
+	ptt->obj_id = SWAP32(ptt->obj_id);
+	ptt->chunk_id = SWAP32(ptt->chunk_id);
+	ptt->n_bytes = SWAP32(ptt->n_bytes);
+}
+
+static void shuffle_oob(char *spareData, struct yaffs_packed_tags2_tags_only *pt)
 {
 	assert(sizeof(*pt) <= spareSize);
 	// NAND LAYOUT: For non-trivial OOB orderings, here would be a good place to shuffle.
@@ -180,8 +206,15 @@ static void shuffle_oob(char *spareData, struct yaffs_packed_tags2 *pt)
 
 static int write_chunk(u8 *data, u32 id, u32 chunk_id, u32 n_bytes)
 {
+#ifdef NOR_MKYAFFS2IMAGE
+	u8 remainder[remainderSize];
+#endif
 	struct yaffs_ext_tags t;
+#ifdef NOR_MKYAFFS2IMAGE
+	struct yaffs_packed_tags2_tags_only pt;
+#else
 	struct yaffs_packed_tags2 pt;
+#endif
 	char spareData[spareSize];
 
 	if (write(outFile,data,chunkSize) != chunkSize)
@@ -200,32 +233,40 @@ static int write_chunk(u8 *data, u32 id, u32 chunk_id, u32 n_bytes)
 // added NCB **CHECK**
 	t.chunk_used = 1;
 
+	nPages++;
+
+	memset(&pt, 0, sizeof(pt));
+
+#ifdef NOR_MKYAFFS2IMAGE
+	yaffs_pack_tags2_tags_only(&pt,&t);
+
+	if (convert_endian)
+		yaffs_packed_tags2_tags_only_to_big_endian(&pt);
+#else
 	if (convert_endian)
 	{
     	    little_to_big_endian(&t);
 	}
-
-	nPages++;
-
-	memset(&pt, 0, sizeof(pt));
 	yaffs_pack_tags2(&pt,&t,1);
+#endif
 
 	memset(spareData, 0xff, sizeof(spareData));
 	shuffle_oob(spareData, &pt);
 
 	if (write(outFile,spareData,sizeof(spareData)) != sizeof(spareData))
 		fatal("write");
+#ifdef NOR_MKYAFFS2IMAGE
+	write_chunk_count++;
+	if (write_chunk_count == pagesPerBlock) {
+		write_chunk_count = 0;
+		memset(remainder, 0xff, sizeof(remainder));
+		if (write(outFile,remainder,sizeof(remainder)) != sizeof(remainder))
+			fatal("write");
+	}
+#endif
 	return 0;
 }
 
-#define SWAP32(x)   ((((x) & 0x000000FF) << 24) | \
-                     (((x) & 0x0000FF00) << 8 ) | \
-                     (((x) & 0x00FF0000) >> 8 ) | \
-                     (((x) & 0xFF000000) >> 24))
-
-#define SWAP16(x)   ((((x) & 0x00FF) << 8) | \
-                     (((x) & 0xFF00) >> 8))
-        
 // This one is easier, since the types are more standard. No funky shifts here.
 static void object_header_little_to_big_endian(struct yaffs_obj_hdr* oh)
 {
@@ -331,6 +372,9 @@ static int write_object_header(int id, enum yaffs_obj_type t, struct stat *s, in
 static void pad_image(void)
 {
 	u8 data[chunkSize + spareSize];
+#ifdef NOR_MKYAFFS2IMAGE
+	u8 remainder[remainderSize];
+#endif
 	int padPages = (nPages % pagesPerBlock);
 
 	if (padPages)
@@ -342,6 +386,12 @@ static void pad_image(void)
 				fatal("write");
 		}
 	}
+
+#ifdef NOR_MKYAFFS2IMAGE
+	memset(remainder, 0xff, sizeof(remainder));
+	if (write(outFile,remainder,sizeof(remainder)) != sizeof(remainder))
+		fatal("write");
+#endif
 }
 
 static int process_directory(int parent, const char *path)

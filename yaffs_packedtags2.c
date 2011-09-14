@@ -97,10 +97,12 @@ void yaffs_pack_tags2(struct yaffs_packed_tags2 *pt,
 {
 	yaffs_pack_tags2_tags_only(&pt->t, t);
 
+#ifndef NOR_MKYAFFS2IMAGE
 	if (tags_ecc)
 		yaffs_ecc_calc_other((unsigned char *)&pt->t,
 				    sizeof(struct yaffs_packed_tags2_tags_only),
 				    &pt->ecc);
+#endif
 }
 
 void yaffs_unpack_tags2_tags_only(struct yaffs_ext_tags *t,
@@ -149,8 +151,12 @@ void yaffs_unpack_tags2(struct yaffs_ext_tags *t, struct yaffs_packed_tags2 *pt,
 	if (pt->t.seq_number != 0xffffffff && tags_ecc) {
 		/* Chunk is in use and we need to do ECC */
 
-		struct yaffs_ecc_other ecc;
 		int result;
+
+#ifdef NOR_MKYAFFS2IMAGE
+		result = 0;
+#else
+		struct yaffs_ecc_other ecc;
 		yaffs_ecc_calc_other((unsigned char *)&pt->t,
 				sizeof(struct yaffs_packed_tags2_tags_only),
 				&ecc);
@@ -158,6 +164,7 @@ void yaffs_unpack_tags2(struct yaffs_ext_tags *t, struct yaffs_packed_tags2 *pt,
 		    yaffs_ecc_correct_other((unsigned char *)&pt->t,
 				sizeof(struct yaffs_packed_tags2_tags_only),
 				&pt->ecc, &ecc);
+#endif
 		switch (result) {
 		case 0:
 			ecc_result = YAFFS_ECC_RESULT_NO_ERROR;
