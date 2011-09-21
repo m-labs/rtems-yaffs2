@@ -764,11 +764,7 @@ static ssize_t ycb_file_write(rtems_libio_t *iop, const void *buffer, size_t cou
 	if (is_valid_offset(new_offset)) {
 		rv = yaffs_wr_file(obj, buffer, offset, (int) count, 0);
 		if (rv > 0) {
-			new_offset = offset + rv;
-			iop->offset = new_offset;
-			if (iop->size < new_offset) {
-				iop->size = new_offset;
-			}
+			iop->size = yaffs_get_obj_length(obj);
 		} else {
 			errno = ENOSPC;
 		}
