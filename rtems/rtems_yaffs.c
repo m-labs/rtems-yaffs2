@@ -776,10 +776,10 @@ static ssize_t ycb_file_write(rtems_libio_t *iop, const void *buffer, size_t cou
 	return rv;
 }
 
-static rtems_off64_t ycb_file_lseek(rtems_libio_t *iop, rtems_off64_t length, int whence)
+static rtems_off64_t ycb_file_lseek(rtems_libio_t *iop, rtems_off64_t offset, int whence)
 {
 	if (is_valid_offset(iop->offset)) {
-		return 0;
+		return iop->offset;
 	} else {
 		rtems_set_errno_and_return_minus_one(EINVAL);
 	}
