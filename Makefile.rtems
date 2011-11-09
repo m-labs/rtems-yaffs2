@@ -9,7 +9,7 @@ CPPFLAGS += -I. -Idirect -Idirect/rtems
 
 DEPFLAGS = -MT $@ -MD -MP -MF $(basename $@).d
 
-GCCFLAGS = -I . -B $(INSTALL_BASE) -specs bsp_specs -qrtems
+GCCFLAGS = -g -I . -B $(INSTALL_BASE) -specs bsp_specs -qrtems
 
 CFLAGS += $(DEPFLAGS) $(GCCFLAGS)
 
