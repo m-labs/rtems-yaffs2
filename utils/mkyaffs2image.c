@@ -558,21 +558,21 @@ int main(int argc, char *argv[])
 {
 	struct stat stats;
 	
-	printf("mkyaffs2image: image building tool for YAFFS2 built "__DATE__"\n");
+	printf("%s: image building tool for YAFFS2 built "__DATE__"\n", argv[0]);
 	
 	if(argc < 3)
 	{
-		printf("usage: mkyaffs2image dir image_file [convert]\n");
+		printf("usage: %s dir image_file [convert]\n", argv[0]);
 		printf("           dir        the directory tree to be converted\n");
 		printf("           image_file the output file to hold the image\n");
-        printf("           'convert'  produce a big-endian image from a little-endian machine\n");
+		printf("           'convert'  produce a big-endian image from a little-endian machine\n");
 		exit(1);
 	}
 
-    if ((argc == 4) && (!strncmp(argv[3], "convert", strlen("convert"))))
-    {
-        convert_endian = 1;
-    }
+	if ((argc == 4) && (!strncmp(argv[3], "convert", strlen("convert"))))
+	{
+		convert_endian = 1;
+	}
     
 	if(stat(argv[1],&stats) < 0)
 	{
