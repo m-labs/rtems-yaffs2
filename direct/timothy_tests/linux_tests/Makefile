@@ -33,8 +33,8 @@ CFLAGS +=    -Wextra -Wpointer-arith
 COMMONTESTOBJS = yaffscfg2k.o yaffs_osglue.o yaffs_hweight.o \
 		 yaffs_ecc.o yaffs_fileem.o yaffs_fileem2k.o yaffsfs.o yaffs_guts.o \
 		 yaffs_packedtags1.o yaffs_ramdisk.o yaffs_ramem2k.o \
-		 yaffs_tagscompat.o yaffs_packedtags2.o yaffs_nand.o \
-		 yaffs_checkptrw.o  yaffs_qsort.o\
+		 yaffs_tagscompat.o yaffs_packedtags2.o  yaffs_nand.o \
+		 yaffs_checkptrw.o  yaffs_qsort.o \
 		 yaffs_nameval.o yaffs_attribs.o \
 		 yaffs_norif1.o  ynorsim.o  \
 		 yaffs_allocator.o \
@@ -42,13 +42,13 @@ COMMONTESTOBJS = yaffscfg2k.o yaffs_osglue.o yaffs_hweight.o \
 		 yaffs_yaffs1.o \
 		 yaffs_yaffs2.o \
 		 yaffs_verify.o \
-		 yaffs_error.o	\
+		 yaffs_error.o  \
 		 yaffs_summary.o
-
+#		yaffs_tagsvalidity.o
 #		 yaffs_checkptrwtest.o\
 
-TESTFILES = 	handle_test.o 
-
+TESTFILES = 	linux_test.o lib.o
+		
 
 		  
 
@@ -60,7 +60,7 @@ ALLOBJS = $(sort $(YAFFSTESTOBJS)) $(PYTHONOBJS)
 YAFFSSYMLINKS = yaffs_ecc.c yaffs_ecc.h yaffs_guts.c yaffs_guts.h yaffs_tagscompat.c yaffs_tagscompat.h \
           yaffs_packedtags1.c yaffs_packedtags1.h yaffs_packedtags2.c yaffs_packedtags2.h \
           yaffs_nand.c yaffs_nand.h yaffs_getblockinfo.h \
-          yaffs_checkptrw.h yaffs_checkptrw.c \
+           yaffs_checkptrw.h yaffs_checkptrw.c \
           yaffs_nameval.c yaffs_nameval.h \
           yaffs_trace.h yaffs_attribs.h \
           yaffs_allocator.c yaffs_allocator.h \
@@ -68,7 +68,8 @@ YAFFSSYMLINKS = yaffs_ecc.c yaffs_ecc.h yaffs_guts.c yaffs_guts.h yaffs_tagscomp
           yaffs_yaffs2.c yaffs_yaffs2.h \
           yaffs_bitmap.c yaffs_bitmap.h \
           yaffs_verify.c yaffs_verify.h \
-		  yaffs_summary.c yaffs_summary.h
+          yaffs_summary.c yaffs_summary.h
+#yaffs_tagsvalidity.c yaffs_tagsvalidity.h
 
 YAFFSDIRECTSYMLINKS =  yaffsfs.c yaffs_flashif.h yaffs_flashif2.h\
 		       yaffsfs.h ydirectenv.h \
@@ -88,7 +89,7 @@ DIRECTEXTRASYMLINKS = 	yaffscfg2k.c yaffs_fileem2k.c yaffs_fileem2k.h\
 SYMLINKS = $(YAFFSSYMLINKS) $(YAFFSDIRECTSYMLINKS) $(DIRECTEXTRASYMLINKS) $(PYTONOSYMLINKS)
 #all: directtest2k boottest
 
-all: handle_test
+all: linux_test
 
 $(ALLOBJS): %.o: %.c
 	gcc -c $(CFLAGS) -o $@ $<
@@ -106,10 +107,10 @@ $(DIRECTEXTRASYMLINKS):
 	ln -s ../../basic-test/$@ $@
 
 
-handle_test: $(SYMLINKS) $(ALLOBJS)
+linux_test: $(SYMLINKS) $(ALLOBJS)
 	gcc $(CFLLAG) -o $@ $(ALLOBJS)
 
 
 
 clean:
-	rm -f handle_test  $(ALLOBJS) core $(SYMLINKS) 
+	rm -f linux_test  $(ALLOBJS) core $(SYMLINKS) 
