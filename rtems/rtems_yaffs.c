@@ -3,7 +3,7 @@
  *
  * Copyright (C) 2010, 2011 Sebastien Bourdeauducq
  * Copyright (C) 2011 Stephan Hoffmann <sho@reLinux.de>
- * Copyright (C) 2011 embedded brains GmbH <rtems@embedded-brains.de>
+ * Copyright (C) 2011-2012 embedded brains GmbH <rtems@embedded-brains.de>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -23,6 +23,7 @@
 #include <rtems/libio_.h>
 #include <rtems/seterr.h>
 #include <rtems/userenv.h>
+#include <sys/stat.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdlib.h>
@@ -37,6 +38,12 @@
 #include "rtems_yaffs.h"
 
 #define MAX_SIZE 0x7fffffff
+
+/* RTEMS interface */
+
+static const rtems_filesystem_file_handlers_r yaffs_directory_handlers;
+static const rtems_filesystem_file_handlers_r yaffs_file_handlers;
+static const rtems_filesystem_operations_table yaffs_ops;
 
 /* locking */
 
@@ -58,454 +65,295 @@ static void rtems_yaffs_os_unmount(struct yaffs_dev *dev)
 	(*os_context->unmount)(dev, os_context);
 }
 
+static struct yaffs_obj *ryfs_get_object_by_location(
+	const rtems_filesystem_location_info_t *loc
+)
+{
+	return loc->node_access;
+}
+
+static struct yaffs_obj *ryfs_get_object_by_iop(
+	const rtems_libio_t *iop
+)
+{
+	return iop->pathinfo.node_access;
+}
+
+static struct yaffs_dev *ryfs_get_device_by_mt_entry(
+	const rtems_filesystem_mount_table_entry_t *mt_entry
+)
+{
+	return mt_entry->fs_info;
+}
+
+static void ryfs_set_location(rtems_filesystem_location_info_t *loc, struct yaffs_obj *obj)
+{
+	loc->node_access = obj;
+
+	switch (obj->variant_type) {
+		case YAFFS_OBJECT_TYPE_FILE:
+			loc->handlers = &yaffs_file_handlers;
+			break;
+		case YAFFS_OBJECT_TYPE_DIRECTORY:
+			loc->handlers = &yaffs_directory_handlers;
+			break;
+		default:
+			loc->handlers = &rtems_filesystem_handlers_default;
+			break;
+	};
+}
+
+static bool ryfs_eval_is_directory(
+	rtems_filesystem_eval_path_context_t *ctx,
+	void *arg
+)
+{
+	rtems_filesystem_location_info_t *currentloc =
+		rtems_filesystem_eval_path_get_currentloc(ctx);
+	struct yaffs_obj *obj = ryfs_get_object_by_location(currentloc);
+
+	obj = yaffs_get_equivalent_obj(obj);
+
+	return obj->variant_type == YAFFS_OBJECT_TYPE_DIRECTORY;
+}
+
+static const char *ryfs_make_string(char *buf, const char *src, size_t len)
+{
+	buf [len] = '\0';
+
+	return memcpy(buf, src, len);
+}
+
+static struct yaffs_obj *ryfs_search_in_directory(
+	struct yaffs_obj *dir,
+	const char *token,
+	size_t tokenlen
+)
+{
+	if (rtems_filesystem_is_parent_directory(token, tokenlen)) {
+		dir = dir->parent;
+	} else if (!rtems_filesystem_is_current_directory(token, tokenlen)) {
+		if (tokenlen < YAFFS_MAX_NAME_LENGTH) {
+			char buf [YAFFS_MAX_NAME_LENGTH + 1];
+
+			dir = yaffs_find_by_name(
+				dir,
+				ryfs_make_string(buf, token, tokenlen)
+			);
+		} else {
+			dir = NULL;
+		}
+	}
+
+	return dir;
+}
+
+static rtems_filesystem_eval_path_generic_status ryfs_eval_token(
+	rtems_filesystem_eval_path_context_t *ctx,
+	void *arg,
+	const char *token,
+	size_t tokenlen
+)
+{
+	rtems_filesystem_eval_path_generic_status status =
+		RTEMS_FILESYSTEM_EVAL_PATH_GENERIC_DONE;
+	rtems_filesystem_location_info_t *currentloc =
+		rtems_filesystem_eval_path_get_currentloc(ctx);
+	struct yaffs_obj *dir = ryfs_get_object_by_location(currentloc);
+	bool access_ok = rtems_filesystem_eval_path_check_access(
+		ctx,
+		RTEMS_FS_PERMS_EXEC,
+		dir->yst_mode,
+		(uid_t) dir->yst_uid,
+		(gid_t) dir->yst_gid
+	);
+
+	if (access_ok) {
+		struct yaffs_obj *entry = ryfs_search_in_directory(dir, token, tokenlen);
+
+		if (entry != NULL) {
+			bool terminal = !rtems_filesystem_eval_path_has_path(ctx);
+			int eval_flags = rtems_filesystem_eval_path_get_flags(ctx);
+			bool follow_hard_link = (eval_flags & RTEMS_FS_FOLLOW_HARD_LINK) != 0;
+			bool follow_sym_link = (eval_flags & RTEMS_FS_FOLLOW_SYM_LINK) != 0;
+			enum yaffs_obj_type type = entry->variant_type;
+
+			rtems_filesystem_eval_path_clear_token(ctx);
+
+			if (type == YAFFS_OBJECT_TYPE_HARDLINK && (follow_hard_link || !terminal)) {
+				entry = yaffs_get_equivalent_obj(entry);
+			}
+
+			if (type == YAFFS_OBJECT_TYPE_SYMLINK && (follow_sym_link || !terminal)) {
+				const char *target = entry->variant.symlink_variant.alias;
+
+				rtems_filesystem_eval_path_recursive(ctx, target, strlen(target));
+			} else {
+				ryfs_set_location(currentloc, entry);
+
+				if (!terminal) {
+					status = RTEMS_FILESYSTEM_EVAL_PATH_GENERIC_CONTINUE;
+				}
+			}
+		} else {
+			status = RTEMS_FILESYSTEM_EVAL_PATH_GENERIC_NO_ENTRY;
+		}
+	}
+
+	return status;
+}
+
+static const rtems_filesystem_eval_path_generic_config ryfs_eval_config = {
+	.is_directory = ryfs_eval_is_directory,
+	.eval_token = ryfs_eval_token
+};
+
+static void ryfs_eval_path(rtems_filesystem_eval_path_context_t *ctx)
+{
+	rtems_filesystem_eval_path_generic(ctx, NULL, &ryfs_eval_config);
+}
+
 /* Helper functions */
 
-static int is_valid_offset(rtems_off64_t offset)
+static int is_valid_offset(off_t offset)
 {
 	return (0 <= offset && offset <= MAX_SIZE);
 }
 
-static int is_path_divider(YCHAR ch)
+static rtems_filesystem_node_types_t ryfs_node_type(
+	const rtems_filesystem_location_info_t *loc
+)
 {
-	const YCHAR *str = YAFFS_PATH_DIVIDERS;
+	struct yaffs_obj *obj = ryfs_get_object_by_location(loc);
+	rtems_filesystem_node_types_t type;
 
-	while(*str){
-		if(*str == ch)
-			return 1;
-		str++;
-	}
-
-	return 0;
-}
-
-static struct yaffs_obj *h_find_object(struct yaffs_dev *dev, struct yaffs_obj *dir, const char *pathname, const char **out_of_fs);
-
-static struct yaffs_obj *h_follow_link(struct yaffs_obj *obj, const char **out_of_fs)
-{
-	if(obj)
-		obj = yaffs_get_equivalent_obj(obj);
-
-	while(obj && obj->variant_type == YAFFS_OBJECT_TYPE_SYMLINK) {
-		YCHAR *alias = obj->variant.symlink_variant.alias;
-
-		if(is_path_divider(*alias))
-			/* Starts with a /, need to scan from root up */
-			obj = h_find_object(obj->my_dev, NULL, alias, out_of_fs);
-		else
-			/* Relative to here, so use the parent of the symlink as a start */
-			obj = h_find_object(obj->my_dev, obj->parent, alias, out_of_fs);
-	}
-	return obj;
-}
-
-
-static struct yaffs_obj *h_find_object(struct yaffs_dev *dev, struct yaffs_obj *dir, const char *pathname, const char **out_of_fs)
-{
-	YCHAR str[YAFFS_MAX_NAME_LENGTH+1];
-	int i;
-	char sux[NAME_MAX];
-
-	/* RTEMS sometimes calls eval_path with pathloc already pointing to the file to look for
-	 * and name being the name of the file. Deal with this case.
-	 * And no, I have no idea either.
-	 */
-	if(strchr(pathname, '/') == NULL) {
-		yaffs_get_obj_name(dir, sux, NAME_MAX);
-		if(strcmp(sux, pathname) == 0)
-			return dir;
-	}
-	
-	*out_of_fs = NULL;
-	
-	if(!dev->is_mounted)
-		return NULL;
-	
-	if(dir == NULL)
-		dir = dev->root_dir;
-	
-	while(dir) {
-		/*
-		 * parse off /.
-		 * curve ball: also throw away surplus '/'
-		 * eg. "/ram/x////ff" gets treated the same as "/ram/x/ff"
-		 */
-		while(is_path_divider(*pathname))
-			pathname++; /* get rid of '/' */
-
-		i = 0;
-		str[0] = 0;
-
-		while(*pathname && !is_path_divider(*pathname)) {
-			if (i < YAFFS_MAX_NAME_LENGTH) {
-				str[i] = *pathname;
-				str[i+1] = '\0';
-				i++;
-			}
-			pathname++;
-		}
-
-		if(strcmp(str, _Y(".")) == 0) {
-			/* Do nothing */
-		} else if(strcmp(str, _Y("..")) == 0) {
-			if(dir->parent != NULL) 
-				dir = dir->parent;
-			else {
-				while(is_path_divider(*pathname))
-					pathname++; /* get rid of '/' */
-				*out_of_fs = pathname;
-				return NULL;
-			}
-		}
-		else {
-			if(str[0] != 0) {
-				if(dir->variant_type != YAFFS_OBJECT_TYPE_DIRECTORY)
-					return NULL;
-				dir = yaffs_find_by_name(dir, str);
-			}
-			dir = h_follow_link(dir, out_of_fs);
-		}
-
-		if(!*pathname)
-			/* got to the end of the string */
-			return dir;
-	}
-	
-	return NULL;
-}
-
-/* RTEMS interface */
-
-static const rtems_filesystem_file_handlers_r yaffs_directory_handlers;
-static const rtems_filesystem_file_handlers_r yaffs_file_handlers;
-static const rtems_filesystem_operations_table yaffs_ops;
-
-//#define VERBOSE_DEBUG
-
-static int ycb_eval_path(const char *pathname, size_t pathnamelen, int flags, rtems_filesystem_location_info_t *pathloc)
-{
-	const char *out_of_fs;
-	struct yaffs_dev *dev;
-	struct yaffs_obj *obj;
-
-	dev = pathloc->mt_entry->fs_info;
-
-	/* The RTEMS eval path system is not a good idea. */
-	ylock(dev);
-	obj = h_find_object(dev, pathloc->node_access, pathname, &out_of_fs);
-	yunlock(dev);
-	if(obj == NULL) {
-		/* Really. It is not. */
-		int extra;
-		
-		if(out_of_fs == NULL) {
-#ifdef VERBOSE_DEBUG
-			printf("newnode: ENOENT (%s)\n", pathname);
-#endif
-			rtems_set_errno_and_return_minus_one(ENOENT);
-		}
-#ifdef VERBOSE_DEBUG
-		printf("newnode: out of fs (%s -> %s) we@%p callback@%p\n", pathname, out_of_fs, ycb_eval_path, pathloc->mt_entry->mt_point_node.ops->evalpath_h);
-#endif
-		*pathloc = pathloc->mt_entry->mt_point_node;
-		extra = 0;
-		while(is_path_divider(*(out_of_fs-1))) {
-			out_of_fs--;
-			extra++;
-		}
-		return pathloc->ops->evalpath_h(out_of_fs-2, pathnamelen - (out_of_fs - pathname) + 2 + extra, flags, pathloc);
-	}
-	pathloc->node_access = obj;
-	pathloc->ops = &yaffs_ops;
-	if(obj->variant_type == YAFFS_OBJECT_TYPE_DIRECTORY)
-		pathloc->handlers = &yaffs_directory_handlers;
-	else if(obj->variant_type == YAFFS_OBJECT_TYPE_FILE)
-		pathloc->handlers = &yaffs_file_handlers;
-	else {
-		errno = ENOSYS;
-		return -1;
-	}
-#ifdef VERBOSE_DEBUG
-	printf("newnode: %p (path: %s, flags: %x)\n", pathloc->node_access, pathname, flags);
-#endif
-	return 0;
-}
-
-static int ycb_eval_path_for_make(const char *path, rtems_filesystem_location_info_t *pathloc, const char **name)
-{
-	char *s;
-	char *path1, *path2;
-	int r, i;
-
-	path1 = strdup(path);
-	if(path1 == NULL) {
-		errno = ENOMEM;
-		return -1;
-	}
-	i = strlen(path1) - 1;
-	while((i >= 0) && (path1[i] == '/')) {
-		path1[i] = '\0';
-		i--;
-	}
-
-	s = strrchr(path1, '/');
-	if(s == NULL) {
-		*name = path;
-		free(path1);
-		return ycb_eval_path(".", strlen(path), 0, pathloc);
-	}
-
-	*name = path + (s - path1) + 1;
-
-	path2 = strdup(path);
-	if(path2 == NULL) {
-		errno = ENOMEM;
-		free(path1);
-		return -1;
-	}
-	s = path2 + (s - path1);
-	*s = 0;
-	r = ycb_eval_path(path2, strlen(path2), 0, pathloc);
-	free(path1);
-	free(path2);
-
-	if(r == 0) {
-		if(pathloc->handlers != &yaffs_directory_handlers) {
-			pathloc->ops->freenod_h(pathloc);
-			errno = EINVAL;
-			return -1;
-		}
-	}
-	
-	return r;
-}
-
-static int ycb_link(rtems_filesystem_location_info_t *to_loc, rtems_filesystem_location_info_t *parent_loc, const char *name)
-{
-	/* TODO */
-	errno = ENOSYS;
-	return -1;
-}
-
-static int ycb_dir_rmnod(rtems_filesystem_location_info_t *parent_loc, rtems_filesystem_location_info_t *pathloc);
-
-static int ycb_unlink(rtems_filesystem_location_info_t *parent_pathloc, rtems_filesystem_location_info_t *pathloc)
-{
-	return ycb_dir_rmnod(parent_pathloc, pathloc);
-}
-
-static rtems_filesystem_node_types_t ycb_node_type(rtems_filesystem_location_info_t *pathloc)
-{
-	struct yaffs_obj *obj;
-	
-	obj = pathloc->node_access;
-	switch(obj->variant_type) {
+	switch (obj->variant_type) {
 		case YAFFS_OBJECT_TYPE_FILE:
-			return RTEMS_FILESYSTEM_MEMORY_FILE;
-		case YAFFS_OBJECT_TYPE_SYMLINK:
-			return RTEMS_FILESYSTEM_SYM_LINK;
+			type = RTEMS_FILESYSTEM_MEMORY_FILE;
+			break;
 		case YAFFS_OBJECT_TYPE_DIRECTORY:
-			return RTEMS_FILESYSTEM_DIRECTORY;
+			type = RTEMS_FILESYSTEM_DIRECTORY;
+			break;
+		case YAFFS_OBJECT_TYPE_SYMLINK:
+			type = RTEMS_FILESYSTEM_SYM_LINK;
+			break;
 		case YAFFS_OBJECT_TYPE_HARDLINK:
-			return RTEMS_FILESYSTEM_HARD_LINK;
+			type = RTEMS_FILESYSTEM_HARD_LINK;
+			break;
 		case YAFFS_OBJECT_TYPE_SPECIAL:
-			return RTEMS_FILESYSTEM_DEVICE;
-		default: /* YAFFS_OBJECT_TYPE_UNKNOWN */
+			type = RTEMS_FILESYSTEM_DEVICE;
+			break;
+		default:
+			type = RTEMS_FILESYSTEM_INVALID_NODE_TYPE;
+			break;
+	}
+
+	return type;
+}
+
+static int ryfs_mknod(
+	const rtems_filesystem_location_info_t *parentloc,
+	const char *name,
+	size_t namelen,
+	mode_t mode,
+	dev_t dev
+)
+{
+	int rv = 0;
+	struct yaffs_obj *parent = ryfs_get_object_by_location(parentloc);
+	struct yaffs_obj *(*create)(
+		struct yaffs_obj *parent,
+		const YCHAR *name,
+		u32 mode,
+		u32 uid,
+		u32 gid
+	);
+
+	switch (mode & S_IFMT) {
+		case S_IFREG:
+			create = yaffs_create_file;
+			break;
+		case S_IFDIR:
+			create = yaffs_create_dir;
+			break;
+		default:
 			errno = EINVAL;
-			return -1;
-	}
-}
-
-static int ycb_mknod(const char *path, mode_t mode, dev_t the_dev, rtems_filesystem_location_info_t *pathloc)
-{
-	char *name, *s;
-	int ret = 0;
-
-	struct yaffs_obj *parent = pathloc->node_access;
-	struct yaffs_dev *dev = parent->my_dev;
-
-	name = strdup(path);
-	if(name == NULL) {
-		errno = ENOMEM;
-		return -1;
-	}
-	s = strchr(name, '/');
-	if(s != NULL)
-		*s = '\0';
-
-	if(parent->my_dev->read_only) {
-		errno = EROFS;
-		free(name);
-		return -1;
+			rv = -1;
+			break;
 	}
 
-	ylock(dev);
+	if (rv == 0) {
+		char buf [YAFFS_MAX_NAME_LENGTH + 1];
+		struct yaffs_obj *entry = (*create)(
+			parent,
+			ryfs_make_string(buf, name, namelen),
+			mode,
+			geteuid(),
+			getegid()
+		);
 
-	if(yaffs_find_by_name(parent, name)) {
-		errno = EEXIST;
-		ret = -1;
-		goto free;
-	}
-
-	if(S_ISDIR(mode)) {
-		struct yaffs_obj *dir;
-		
-		dir = yaffs_create_dir(parent, name, mode, 0, 0);
-		if(dir == NULL) {
-			errno = ENOSPC; /* just assume no space */
-			ret = -1;
-			goto free;
+		if (entry == NULL) {
+			errno = ENOSPC;
+			rv = -1;
 		}
-	} else if(S_ISREG(mode)) {
-		struct yaffs_obj *file;
-		
-		file = yaffs_create_file(parent, name, mode, 0, 0);
-		if(file == NULL) {
-			errno = ENOSPC; /* just assume no space */
-			ret = -1;
-			goto free;
-		}
-	} else {
-		printf("mknod of unsupported type\n");
-		errno = ENOSYS;
-		ret = -1;
-		goto free;
 	}
-free:
-	yunlock(dev);
-	free(name);
-	return ret;
+
+	return rv;
 }
 
-static int ycb_chown(rtems_filesystem_location_info_t *pathloc, uid_t owner, gid_t group)
+static int ryfs_utime(
+	const rtems_filesystem_location_info_t *loc,
+	time_t actime,
+	time_t modtime
+)
 {
-	/* not implemented */
-	errno = 0;
-	return 0;
-}
+	int rv = 0;
+	struct yaffs_obj *obj = ryfs_get_object_by_location(loc);
 
-static int ycb_freenod(rtems_filesystem_location_info_t *pathloc)
-{
-#ifdef VERBOSE_DEBUG
-	printf("freenode: %p\n", pathloc->node_access);
-#endif
-	return 0;
-}
-
-static int ycb_mount(rtems_filesystem_mount_table_entry_t *mt_entry)
-{
-	/* not implemented */
-	errno = ENOSYS;
-	return -1;
-}
-
-static int ycb_unmount(rtems_filesystem_mount_table_entry_t *mt_entry)
-{
-	/* not implemented */
-	errno = ENOSYS;
-	return -1;
-}
-
-static int ycb_fsunmount(rtems_filesystem_mount_table_entry_t *mt_entry)
-{
-	struct yaffs_dev *dev = mt_entry->fs_info;
-
-	ylock(dev);
-	yaffs_flush_whole_cache(dev);
-	yaffs_deinitialise(dev);
-	yunlock(dev);
-	rtems_yaffs_os_unmount(dev);
-
-	return 0;
-}
-
-static int ycb_utime(rtems_filesystem_location_info_t *pathloc, time_t actime, time_t modtime)
-{
-	struct yaffs_obj *obj;
-	struct yaffs_dev *dev;
-
-	obj = pathloc->node_access;
-	dev = obj->my_dev;
-	
-	ylock(dev);
 	obj = yaffs_get_equivalent_obj(obj);
-	if(obj != NULL) {
+	if (obj != NULL) {
 		obj->dirty = 1;
-		obj->yst_atime = obj->yst_ctime = (u32)actime;
-		obj->yst_mtime = (u32)modtime;
-	}
-	yunlock(dev);
-	return 0;
-}
-
-static int ycb_evaluate_link(rtems_filesystem_location_info_t *pathloc, int flags)
-{
-	/* TODO */
-	errno = ENOSYS;
-	return -1;
-}
-
-static int ycb_symlink(rtems_filesystem_location_info_t *loc, const char *link_name, const char *node_name)
-{
-	/* TODO */
-	errno = ENOSYS;
-	return -1;
-}
-
-static ssize_t ycb_readlink(rtems_filesystem_location_info_t *loc, char *buf, size_t bufsize)
-{
-	/* TODO */
-	errno = ENOSYS;
-	return -1;
-}
-
-static int ycb_rename(rtems_filesystem_location_info_t *old_parent_loc, rtems_filesystem_location_info_t *old_loc, rtems_filesystem_location_info_t *new_parent_loc, const char *name)
-{
-	struct yaffs_obj *obj;
-	struct yaffs_dev *dev;
-	int r;
-	char oldname[NAME_MAX];
-
-	obj = old_loc->node_access;
-	dev = obj->my_dev;
-
-	if(obj->my_dev->read_only) {
-		errno = EROFS;
-		return -1;
-	}
-
-	ylock(dev);
-	yaffs_get_obj_name(obj, oldname, NAME_MAX);
-	r = yaffs_rename_obj(obj->parent, oldname, new_parent_loc->node_access, name);
-	if(r == YAFFS_FAIL) {
-		yunlock(dev);
+		obj->yst_atime = (u32) actime;
+		obj->yst_mtime = (u32) modtime;
+		obj->yst_ctime = (u32) time(NULL);
+	} else {
 		errno = EIO;
-		return -1;
+		rv = -1;
 	}
-	yunlock(dev);
-	return 0;
+
+	return rv;
 }
 
-static int ycb_statvfs(rtems_filesystem_location_info_t *loc, struct statvfs *buf)
+static int ryfs_rename(
+	const rtems_filesystem_location_info_t *old_parent_loc,
+	const rtems_filesystem_location_info_t *old_loc,
+	const rtems_filesystem_location_info_t *new_parent_loc,
+	const char *name,
+	size_t namelen
+)
 {
-	/* TODO */
-	printf("%s\n", __func__);
-	errno = ENOSYS;
-	return -1;
+	int rv = 0;
+	struct yaffs_obj *obj = ryfs_get_object_by_location(old_loc);
+	char old_name_buf [YAFFS_MAX_NAME_LENGTH + 1];
+	char new_name_buf [YAFFS_MAX_NAME_LENGTH + 1];
+	int yc;
+
+	yaffs_get_obj_name(obj, old_name_buf, sizeof(old_name_buf));
+	yc = yaffs_rename_obj(
+		obj->parent,
+		old_name_buf,
+		ryfs_get_object_by_location(new_parent_loc),
+		ryfs_make_string(new_name_buf, name, namelen)
+	);
+	if (yc != YAFFS_OK) {
+		errno = EIO;
+		rv = -1;
+	}
+
+	return rv;
 }
 
-static int ycb_dir_open(rtems_libio_t *iop, const char *pathname, uint32_t flag, uint32_t mode)
-{
-	/* nothing to do */
-	return 0;
-}
-
-static int ycb_dir_close(rtems_libio_t *iop)
-{
-	/* nothing to do */
-	return 0;
-}
-
-static ssize_t ycb_dir_read(rtems_libio_t *iop, void *buffer, size_t count)
+static ssize_t ryfs_dir_read(rtems_libio_t *iop, void *buffer, size_t count)
 {
 	struct yaffs_obj *obj;
 	struct yaffs_dev *dev;
@@ -514,20 +362,20 @@ static ssize_t ycb_dir_read(rtems_libio_t *iop, void *buffer, size_t count)
 	size_t maxcount;
 	struct list_head *next;
 	ssize_t readlen;
-	
+
 	obj = (struct yaffs_obj *)iop->pathinfo.node_access;
 	dev = obj->my_dev;
 	maxcount = count / sizeof(struct dirent);
 
 	ylock(dev);
-	
+
 	if(iop->offset == 0) {
 		if(list_empty(&obj->variant.dir_variant.children))
 			iop->data1 = NULL;
 		else
 			iop->data1 = list_entry(obj->variant.dir_variant.children.next, struct yaffs_obj, siblings);
 	}
-	
+
 	i = 0;
 	while((i < maxcount) && (iop->data1 != NULL)) {
 		de[i].d_ino = (long)yaffs_get_equivalent_obj((struct yaffs_obj *)iop->data1)->obj_id;
@@ -535,7 +383,7 @@ static ssize_t ycb_dir_read(rtems_libio_t *iop, void *buffer, size_t count)
 		yaffs_get_obj_name((struct yaffs_obj *)iop->data1, de[i].d_name, NAME_MAX);
 		de[i].d_reclen = sizeof(struct dirent);
 		de[i].d_namlen = (unsigned short)strnlen(de[i].d_name, NAME_MAX);
-		
+
 		i++;
 		next = ((struct yaffs_obj *)iop->data1)->siblings.next;
 		if(next == &obj->variant.dir_variant.children)
@@ -543,16 +391,16 @@ static ssize_t ycb_dir_read(rtems_libio_t *iop, void *buffer, size_t count)
 		else
 			iop->data1 = list_entry(next, struct yaffs_obj, siblings);
 	}
-	
+
 	readlen = (ssize_t)(i * sizeof(struct dirent));
 	iop->offset = iop->offset + readlen;
 
 	yunlock(dev);
-	
+
 	return readlen;
 }
 
-static rtems_off64_t ycb_dir_lseek(rtems_libio_t *iop, rtems_off64_t length, int whence)
+static off_t ryfs_dir_lseek(rtems_libio_t *iop, off_t length, int whence)
 {
 	/* We support only rewinding */
 	if (whence == SEEK_SET && length == 0) {
@@ -562,130 +410,139 @@ static rtems_off64_t ycb_dir_lseek(rtems_libio_t *iop, rtems_off64_t length, int
 	}
 }
 
-static int ycb_fstat(rtems_filesystem_location_info_t *loc, struct stat *buf)
+static int ryfs_fstat(const rtems_filesystem_location_info_t *loc, struct stat *buf)
 {
-	struct yaffs_obj *obj;
-	struct yaffs_dev *dev;
-	
-	obj = (struct yaffs_obj *)loc->node_access;
-	dev = (struct yaffs_dev *)obj->my_dev;
-
-	ylock(dev);
-	
-	obj = yaffs_get_equivalent_obj(obj);
-
-	buf->st_ino = obj->obj_id;
-	buf->st_mode = obj->yst_mode & ~(unsigned)S_IFMT; /* clear out file type bits */
-
-	if(obj->variant_type == YAFFS_OBJECT_TYPE_DIRECTORY)
-		buf->st_mode |= S_IFDIR;
-	else if(obj->variant_type == YAFFS_OBJECT_TYPE_SYMLINK)
-		buf->st_mode |= S_IFLNK;
-	else if(obj->variant_type == YAFFS_OBJECT_TYPE_FILE)
-		buf->st_mode |= S_IFREG;
-
-	buf->st_rdev = 0ll;
-	buf->st_nlink = (nlink_t)yaffs_get_obj_link_count(obj);
-	buf->st_uid = 0;
-	buf->st_gid = 0;
-	buf->st_rdev = obj->yst_rdev;
-	buf->st_size = yaffs_get_obj_length(obj);
-	buf->st_blksize = obj->my_dev->data_bytes_per_chunk;
-	buf->st_blocks = (blkcnt_t)((buf->st_size + buf->st_blksize -1)/buf->st_blksize);
-	buf->st_atime = (time_t)obj->yst_atime;
-	buf->st_ctime = (time_t)obj->yst_ctime;
-	buf->st_mtime = (time_t)obj->yst_mtime;
-
-	yunlock(dev);
-	
-	return 0;
-}
-
-static int ycb_fchmod(rtems_filesystem_location_info_t *loc, mode_t mode)
-{
-	struct yaffs_obj *obj;
-	struct yaffs_dev *dev;
-	int result;
-
-	if(mode & ~(0777u)){
-		errno = EINVAL;
-		return -1;
-	}
-	
-	obj = loc->node_access;
-	if(obj->my_dev->read_only) {
-		errno = EROFS;
-		return -1;
-	}
-
-	dev = obj->my_dev;
-
-	ylock(dev);
-
-	obj = yaffs_get_equivalent_obj(obj);
-
-	result = YAFFS_FAIL;
-	if(obj) {
-		obj->yst_mode = (obj->yst_mode & ~0777u) | mode;
-		obj->dirty = 1;
-		result = yaffs_flush_file(obj, 0, 0);
-	}
-	if(result != YAFFS_OK) {
-		yunlock(dev);
-		errno = EIO;
-		return -1;
-	}
-	yunlock(dev);
-	return 0;
-}
-
-static int ycb_fdatasync(rtems_libio_t *iop)
-{
-	const rtems_filesystem_location_info_t *pathinfo = &iop->pathinfo;
-	struct yaffs_obj *obj = pathinfo->node_access;
+	int rv = 0;
+	struct yaffs_obj *obj = ryfs_get_object_by_location(loc);
 	struct yaffs_dev *dev = obj->my_dev;
-	int yc = YAFFS_OK;
+
+	ylock(dev);
+
+	obj = yaffs_get_equivalent_obj(obj);
+	if (obj != NULL) {
+		buf->st_ino = obj->obj_id;
+		buf->st_mode = obj->yst_mode;
+		buf->st_nlink = (nlink_t) yaffs_get_obj_link_count(obj);
+		buf->st_rdev = obj->yst_rdev;
+		buf->st_size = yaffs_get_obj_length(obj);
+		buf->st_blksize = obj->my_dev->data_bytes_per_chunk;
+		buf->st_blocks = (blkcnt_t)
+			((buf->st_size + buf->st_blksize - 1) / buf->st_blksize);
+		buf->st_uid = (uid_t) obj->yst_uid;
+		buf->st_gid = (gid_t) obj->yst_gid;
+		buf->st_atime = (time_t) obj->yst_atime;
+		buf->st_ctime = (time_t) obj->yst_ctime;
+		buf->st_mtime = (time_t) obj->yst_mtime;
+	} else {
+		errno = EIO;
+		rv = -1;
+	}
+
+	yunlock(dev);
+
+	return rv;
+}
+
+static int ryfs_fchmod(const rtems_filesystem_location_info_t *loc, mode_t mode)
+{
+	int rv = 0;
+	mode_t mode_mask = S_IRWXU | S_IRWXG | S_IRWXO;
+
+	if ((mode & ~mode_mask) == 0) {
+		struct yaffs_obj *obj = ryfs_get_object_by_location(loc);
+		int yc;
+
+		obj = yaffs_get_equivalent_obj(obj);
+		if (obj != NULL) {
+			obj->yst_mode = (obj->yst_mode & ~mode_mask) | mode;
+			obj->dirty = 1;
+			yc = yaffs_flush_file(obj, 0, 0);
+		} else {
+			yc = YAFFS_FAIL;
+		}
+
+		if (yc != YAFFS_OK) {
+			errno = EIO;
+			rv = -1;
+		}
+	} else {
+		errno = EINVAL;
+		rv = -1;
+	}
+
+	return rv;
+}
+
+static int ryfs_chown(
+	const rtems_filesystem_location_info_t *loc,
+	uid_t owner,
+	gid_t group
+)
+{
+	int rv = 0;
+	struct yaffs_obj *obj = ryfs_get_object_by_location(loc);
+	int yc;
+
+	obj = yaffs_get_equivalent_obj(obj);
+	if (obj != NULL) {
+		obj->yst_uid = owner;
+		obj->yst_gid = group;
+		obj->dirty = 1;
+		yc = yaffs_flush_file(obj, 0, 0);
+	} else {
+		yc = YAFFS_FAIL;
+	}
+
+	if (yc != YAFFS_OK) {
+		errno = EIO;
+		rv = -1;
+	}
+
+	return rv;
+}
+
+static int ryfs_fsync_or_fdatasync(rtems_libio_t *iop)
+{
+	int rv = 0;
+	struct yaffs_obj *obj = ryfs_get_object_by_iop(iop);
+	struct yaffs_dev *dev = obj->my_dev;
+	int yc;
 
 	ylock(dev);
 	yc = yaffs_flush_file(obj, 0, 1);
-	if (rtems_filesystem_is_root_location(pathinfo)) {
+	if (rtems_filesystem_location_is_root(&iop->pathinfo)) {
 		yaffs_flush_whole_cache(dev);
 	}
 	yunlock(dev);
 
-	if (yc == YAFFS_OK) {
-		return 0;
-	} else {
-		rtems_set_errno_and_return_minus_one(EIO);
+	if (yc != YAFFS_OK) {
+		errno = EIO;
+		rv = -1;
 	}
+
+	return rv;
 }
 
-static int ycb_dir_rmnod(rtems_filesystem_location_info_t *parent_loc, rtems_filesystem_location_info_t *pathloc)
+static int ryfs_rmnod(
+	const rtems_filesystem_location_info_t *parentloc,
+	const rtems_filesystem_location_info_t *loc
+)
 {
-	struct yaffs_obj *obj;
-	struct yaffs_dev *dev;
-	int r;
+	int rv = 0;
+	struct yaffs_obj *obj = ryfs_get_object_by_location(loc);
+	int yc = yaffs_del_obj(obj);
 
-	obj = pathloc->node_access;
-	if(obj->my_dev->read_only) {
-		errno = EROFS;
-		return -1;
-	}
-	dev = obj->my_dev;
-	ylock(dev);
-	r = yaffs_del_obj(obj);
-	yunlock(dev);
-	if(r == YAFFS_FAIL) {
+	if (yc != YAFFS_OK) {
 		errno = ENOTEMPTY;
-		return -1;
+		rv = -1;
 	}
-	return 0;
+
+	return rv;
 }
 
-static int ycb_file_open(rtems_libio_t *iop, const char *pathname, uint32_t flag, uint32_t mode)
+static int ryfs_file_open(rtems_libio_t *iop, const char *pathname, int oflag, mode_t mode)
 {
-	const rtems_filesystem_location_info_t *pathinfo = &iop->pathinfo;
-	struct yaffs_obj *obj = pathinfo->node_access;
+	struct yaffs_obj *obj = ryfs_get_object_by_iop(iop);
 	struct yaffs_dev *dev = obj->my_dev;
 	int length = 0;
 
@@ -700,10 +557,9 @@ static int ycb_file_open(rtems_libio_t *iop, const char *pathname, uint32_t flag
 	return 0;
 }
 
-static int ycb_file_close(rtems_libio_t *iop)
+static int ryfs_file_close(rtems_libio_t *iop)
 {
-	const rtems_filesystem_location_info_t *pathinfo = &iop->pathinfo;
-	struct yaffs_obj *obj = pathinfo->node_access;
+	struct yaffs_obj *obj = ryfs_get_object_by_iop(iop);
 	struct yaffs_dev *dev = obj->my_dev;
 
 	ylock(dev);
@@ -713,19 +569,16 @@ static int ycb_file_close(rtems_libio_t *iop)
 	return 0;
 }
 
-static ssize_t ycb_file_read(rtems_libio_t *iop, void *buffer, size_t count)
+static ssize_t ryfs_file_read(rtems_libio_t *iop, void *buffer, size_t count)
 {
-	struct yaffs_obj *obj;
-	struct yaffs_dev *dev;
+	struct yaffs_obj *obj = ryfs_get_object_by_iop(iop);
+	struct yaffs_dev *dev = obj->my_dev;
 	ssize_t nr;
 	int ol;
 	size_t maxread;
 
-	obj = iop->pathinfo.node_access;
-	dev = obj->my_dev;
-
 	ylock(dev);
-	
+
 	ol = yaffs_get_obj_length(obj);
 	if(iop->offset >= ol)
 		maxread = 0;
@@ -733,11 +586,11 @@ static ssize_t ycb_file_read(rtems_libio_t *iop, void *buffer, size_t count)
 		maxread = (size_t)(ol - (int)iop->offset);
 	if(count > maxread)
 		count = maxread;
-	
+
 	nr = yaffs_file_rd(obj, buffer, iop->offset, (int)count);
 
 	yunlock(dev);
-	
+
 	if(nr < 0) {
 		errno = ENOSPC;
 		return -1;
@@ -745,13 +598,12 @@ static ssize_t ycb_file_read(rtems_libio_t *iop, void *buffer, size_t count)
 	return nr;
 }
 
-static ssize_t ycb_file_write(rtems_libio_t *iop, const void *buffer, size_t count)
+static ssize_t ryfs_file_write(rtems_libio_t *iop, const void *buffer, size_t count)
 {
-	const rtems_filesystem_location_info_t *pathinfo = &iop->pathinfo;
-	struct yaffs_obj *obj = pathinfo->node_access;
+	struct yaffs_obj *obj = ryfs_get_object_by_iop(iop);
 	struct yaffs_dev *dev = obj->my_dev;
-	rtems_off64_t offset = 0;
-	rtems_off64_t new_offset = 0;
+	off_t offset = 0;
+	off_t new_offset = 0;
 	ssize_t rv = -1;
 
 	if (count == 0) {
@@ -776,7 +628,7 @@ static ssize_t ycb_file_write(rtems_libio_t *iop, const void *buffer, size_t cou
 	return rv;
 }
 
-static rtems_off64_t ycb_file_lseek(rtems_libio_t *iop, rtems_off64_t offset, int whence)
+static off_t ryfs_file_lseek(rtems_libio_t *iop, off_t offset, int whence)
 {
 	if (is_valid_offset(iop->offset)) {
 		return iop->offset;
@@ -785,23 +637,25 @@ static rtems_off64_t ycb_file_lseek(rtems_libio_t *iop, rtems_off64_t offset, in
 	}
 }
 
-int ycb_file_ftruncate(rtems_libio_t *iop, rtems_off64_t length)
+static int ryfs_file_ftruncate(rtems_libio_t *iop, off_t length)
 {
-	struct yaffs_obj *obj;
-	struct yaffs_dev *dev;
-	int r;
+	int rv = 0;
+	struct yaffs_obj *obj = ryfs_get_object_by_iop(iop);
+	struct yaffs_dev *dev = obj->my_dev;
+	int yc;
 
-	obj = iop->pathinfo.node_access;
-	dev = obj->my_dev;
 	ylock(dev);
-	r = yaffs_resize_file(obj, length);
+	yc = yaffs_resize_file(obj, length);
 	yunlock(dev);
-	if(r == YAFFS_FAIL) {
+
+	if (yc == YAFFS_OK) {
+		iop->size = length;
+	} else {
 		errno = EIO;
-		return -1;
+		rv = -1;
 	}
-	iop->size = length;
-	return 0;
+
+	return rv;
 }
 
 int rtems_yaffs_mount_handler(rtems_filesystem_mount_table_entry_t *mt_entry, const void *data)
@@ -809,7 +663,7 @@ int rtems_yaffs_mount_handler(rtems_filesystem_mount_table_entry_t *mt_entry, co
 	const rtems_yaffs_mount_data *mount_data = data;
 	struct yaffs_dev *dev = mount_data->dev;
 
-	if (dev->read_only && (mt_entry->options & RTEMS_FILESYSTEM_READ_WRITE) != 0) {
+	if (dev->read_only && mt_entry->writeable) {
 		errno = EACCES;
 		return -1;
 	}
@@ -821,9 +675,9 @@ int rtems_yaffs_mount_handler(rtems_filesystem_mount_table_entry_t *mt_entry, co
 		return -1;
 	}
 
-	mt_entry->mt_fs_root.node_access = dev->root_dir;
-	mt_entry->mt_fs_root.handlers = &yaffs_directory_handlers;
-	mt_entry->mt_fs_root.ops = &yaffs_ops;
+	mt_entry->mt_fs_root->location.node_access = dev->root_dir;
+	mt_entry->mt_fs_root->location.handlers = &yaffs_directory_handlers;
+	mt_entry->mt_fs_root->location.ops = &yaffs_ops;
 	mt_entry->fs_info = dev;
 
 	yaffs_flush_whole_cache(dev);
@@ -832,57 +686,79 @@ int rtems_yaffs_mount_handler(rtems_filesystem_mount_table_entry_t *mt_entry, co
 	return 0;
 }
 
+static void ryfs_fsunmount(rtems_filesystem_mount_table_entry_t *mt_entry)
+{
+	struct yaffs_dev *dev = ryfs_get_device_by_mt_entry(mt_entry);
+
+	ylock(dev);
+	yaffs_flush_whole_cache(dev);
+	yaffs_deinitialise(dev);
+	yunlock(dev);
+	rtems_yaffs_os_unmount(dev);
+}
+
+static void ryfs_lock(rtems_filesystem_mount_table_entry_t *mt_entry)
+{
+	struct yaffs_dev *dev = ryfs_get_device_by_mt_entry(mt_entry);
+
+	ylock(dev);
+}
+
+static void ryfs_unlock(rtems_filesystem_mount_table_entry_t *mt_entry)
+{
+	struct yaffs_dev *dev = ryfs_get_device_by_mt_entry(mt_entry);
+
+	yunlock(dev);
+}
+
 static const rtems_filesystem_file_handlers_r yaffs_directory_handlers = {
-	.open_h = ycb_dir_open,
-	.close_h = ycb_dir_close,
-	.read_h = ycb_dir_read,
-	.write_h = rtems_filesystem_default_write,	     /* write */
-	.ioctl_h = rtems_filesystem_default_ioctl,	     /* ioctl */
-	.lseek_h = ycb_dir_lseek,
-	.fstat_h = ycb_fstat,
-	.fchmod_h = ycb_fchmod,
-	.ftruncate_h = rtems_filesystem_default_ftruncate,	     /* ftruncate */
-	.fsync_h = ycb_fdatasync,    /* fsync */
-	.fdatasync_h = ycb_fdatasync,
-	.fcntl_h = rtems_filesystem_default_fcntl,	     /* fcntl */
-	.rmnod_h = ycb_dir_rmnod
+	.open_h = rtems_filesystem_default_open,
+	.close_h = rtems_filesystem_default_close,
+	.read_h = ryfs_dir_read,
+	.write_h = rtems_filesystem_default_write,
+	.ioctl_h = rtems_filesystem_default_ioctl,
+	.lseek_h = ryfs_dir_lseek,
+	.fstat_h = ryfs_fstat,
+	.ftruncate_h = rtems_filesystem_default_ftruncate_directory,
+	.fsync_h = ryfs_fsync_or_fdatasync,
+	.fdatasync_h = ryfs_fsync_or_fdatasync,
+	.fcntl_h = rtems_filesystem_default_fcntl
 };
 
 static const rtems_filesystem_file_handlers_r yaffs_file_handlers = {
-	.open_h = ycb_file_open,
-	.close_h = ycb_file_close,
-	.read_h = ycb_file_read,
-	.write_h = ycb_file_write,
-	.ioctl_h = rtems_filesystem_default_ioctl,	     /* ioctl */
-	.lseek_h = ycb_file_lseek,
-	.fstat_h = ycb_fstat,
-	.fchmod_h = rtems_filesystem_default_fchmod,	     /* fchmod */
-	.ftruncate_h = ycb_file_ftruncate,
-	.fsync_h = ycb_fdatasync,    /* fsync */
-	.fdatasync_h = ycb_fdatasync,
-	.fcntl_h = rtems_filesystem_default_fcntl,	     /* fcntl */
-	.rmnod_h = rtems_filesystem_default_rmnod	      /* rmnod */
+	.open_h = ryfs_file_open,
+	.close_h = ryfs_file_close,
+	.read_h = ryfs_file_read,
+	.write_h = ryfs_file_write,
+	.ioctl_h = rtems_filesystem_default_ioctl,
+	.lseek_h = ryfs_file_lseek,
+	.fstat_h = ryfs_fstat,
+	.ftruncate_h = ryfs_file_ftruncate,
+	.fsync_h = ryfs_fsync_or_fdatasync,
+	.fdatasync_h = ryfs_fsync_or_fdatasync,
+	.fcntl_h = rtems_filesystem_default_fcntl
 };
 
 static const rtems_filesystem_operations_table yaffs_ops = {
-	.evalpath_h = ycb_eval_path,
-	.evalformake_h = ycb_eval_path_for_make,
-	.link_h = ycb_link,
-	.unlink_h = ycb_unlink,
-	.node_type_h = ycb_node_type,
-	.mknod_h = ycb_mknod,
-	.chown_h = ycb_chown,
-	.freenod_h = ycb_freenod,
-	.mount_h = ycb_mount,
+	.lock_h = ryfs_lock,
+	.unlock_h = ryfs_unlock,
+	.eval_path_h = ryfs_eval_path,
+	.link_h = rtems_filesystem_default_link,
+	.are_nodes_equal_h = rtems_filesystem_default_are_nodes_equal,
+	.node_type_h = ryfs_node_type,
+	.mknod_h = ryfs_mknod,
+	.rmnod_h = ryfs_rmnod,
+	.fchmod_h = ryfs_fchmod,
+	.chown_h = ryfs_chown,
+	.clonenod_h = rtems_filesystem_default_clonenode,
+	.freenod_h = rtems_filesystem_default_freenode,
+	.mount_h = rtems_filesystem_default_mount,
 	.fsmount_me_h = rtems_yaffs_mount_handler,
-	.unmount_h = ycb_unmount,
-	.fsunmount_me_h = ycb_fsunmount,
-	.utime_h = ycb_utime,
-	.eval_link_h = ycb_evaluate_link,
-	.symlink_h = ycb_symlink,
-	.readlink_h = ycb_readlink,
-	.rename_h = ycb_rename,
-	.statvfs_h = ycb_statvfs
+	.unmount_h = rtems_filesystem_default_unmount,
+	.fsunmount_me_h = ryfs_fsunmount,
+	.utime_h = ryfs_utime,
+	.symlink_h = rtems_filesystem_default_symlink,
+	.readlink_h = rtems_filesystem_default_readlink,
+	.rename_h = ryfs_rename,
+	.statvfs_h = rtems_filesystem_default_statvfs
 };
-
-/* Yeah, who thought writing filesystem glue code could ever be so complicated? */
