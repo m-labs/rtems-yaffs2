@@ -614,9 +614,7 @@ static ssize_t ryfs_file_write(rtems_libio_t *iop, const void *buffer, size_t co
 	new_offset = offset + count;
 	if (is_valid_offset(new_offset)) {
 		rv = yaffs_wr_file(obj, buffer, offset, (int) count, 0);
-		if (rv > 0) {
-			iop->offset = new_offset;
-		} else {
+		if (rv <= 0) {
 			errno = ENOSPC;
 		}
 	} else {
