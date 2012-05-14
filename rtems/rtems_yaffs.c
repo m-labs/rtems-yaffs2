@@ -548,7 +548,6 @@ static int ryfs_file_open(rtems_libio_t *iop, const char *pathname, int oflag, m
 
 	ylock(dev);
 	length = yaffs_get_obj_length(obj);
-	iop->size = length;
 	if ((iop->flags & LIBIO_FLAGS_APPEND) != 0) {
 		iop->offset = length;
 	}
@@ -616,7 +615,7 @@ static ssize_t ryfs_file_write(rtems_libio_t *iop, const void *buffer, size_t co
 	if (is_valid_offset(new_offset)) {
 		rv = yaffs_wr_file(obj, buffer, offset, (int) count, 0);
 		if (rv > 0) {
-			iop->size = yaffs_get_obj_length(obj);
+			iop->offset = new_offset;
 		} else {
 			errno = ENOSPC;
 		}
@@ -648,9 +647,7 @@ static int ryfs_file_ftruncate(rtems_libio_t *iop, off_t length)
 	yc = yaffs_resize_file(obj, length);
 	yunlock(dev);
 
-	if (yc == YAFFS_OK) {
-		iop->size = length;
-	} else {
+	if (yc != YAFFS_OK) {
 		errno = EIO;
 		rv = -1;
 	}
