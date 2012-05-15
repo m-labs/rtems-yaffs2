@@ -37,8 +37,6 @@
 
 #include "rtems_yaffs.h"
 
-#define MAX_SIZE 0x7fffffff
-
 /* RTEMS interface */
 
 static const rtems_filesystem_file_handlers_r yaffs_directory_handlers;
@@ -214,11 +212,6 @@ static void ryfs_eval_path(rtems_filesystem_eval_path_context_t *ctx)
 }
 
 /* Helper functions */
-
-static int is_valid_offset(off_t offset)
-{
-	return (0 <= offset && offset <= MAX_SIZE);
-}
 
 static rtems_filesystem_node_types_t ryfs_node_type(
 	const rtems_filesystem_location_info_t *loc
@@ -400,16 +393,6 @@ static ssize_t ryfs_dir_read(rtems_libio_t *iop, void *buffer, size_t count)
 	return readlen;
 }
 
-static off_t ryfs_dir_lseek(rtems_libio_t *iop, off_t length, int whence)
-{
-	/* We support only rewinding */
-	if (whence == SEEK_SET && length == 0) {
-		return 0;
-	} else {
-		rtems_set_errno_and_return_minus_one(EINVAL);
-	}
-}
-
 static int ryfs_fstat(const rtems_filesystem_location_info_t *loc, struct stat *buf)
 {
 	int rv = 0;
@@ -587,13 +570,15 @@ static ssize_t ryfs_file_read(rtems_libio_t *iop, void *buffer, size_t count)
 		count = maxread;
 
 	nr = yaffs_file_rd(obj, buffer, iop->offset, (int)count);
+	if (nr >= 0) {
+		iop->offset += nr;
+	} else {
+		errno = EIO;
+		nr = -1;
+	}
 
 	yunlock(dev);
 
-	if(nr < 0) {
-		errno = ENOSPC;
-		return -1;
-	}
 	return nr;
 }
 
@@ -601,9 +586,9 @@ static ssize_t ryfs_file_write(rtems_libio_t *iop, const void *buffer, size_t co
 {
 	struct yaffs_obj *obj = ryfs_get_object_by_iop(iop);
 	struct yaffs_dev *dev = obj->my_dev;
-	off_t offset = 0;
-	off_t new_offset = 0;
 	ssize_t rv = -1;
+	int max_size = INT_MAX;
+	off_t offset;
 
 	if (count == 0) {
 		return 0;
@@ -611,27 +596,26 @@ static ssize_t ryfs_file_write(rtems_libio_t *iop, const void *buffer, size_t co
 
 	ylock(dev);
 	offset = iop->offset;
-	new_offset = offset + count;
-	if (is_valid_offset(new_offset)) {
+	if (offset < max_size) {
+		size_t max_count = max_size - (size_t) offset;
+
+		if (count > max_count) {
+			count = max_count;
+		}
+
 		rv = yaffs_wr_file(obj, buffer, offset, (int) count, 0);
-		if (rv <= 0) {
+		if (rv > 0) {
+			iop->offset += rv;
+		} else {
 			errno = ENOSPC;
+			rv = -1;
 		}
 	} else {
-		errno = EINVAL;
+		errno = EFBIG;
 	}
 	yunlock(dev);
 
 	return rv;
-}
-
-static off_t ryfs_file_lseek(rtems_libio_t *iop, off_t offset, int whence)
-{
-	if (is_valid_offset(iop->offset)) {
-		return iop->offset;
-	} else {
-		rtems_set_errno_and_return_minus_one(EINVAL);
-	}
 }
 
 static int ryfs_file_ftruncate(rtems_libio_t *iop, off_t length)
@@ -670,10 +654,10 @@ int rtems_yaffs_mount_handler(rtems_filesystem_mount_table_entry_t *mt_entry, co
 		return -1;
 	}
 
+	mt_entry->fs_info = dev;
+	mt_entry->ops = &yaffs_ops;
 	mt_entry->mt_fs_root->location.node_access = dev->root_dir;
 	mt_entry->mt_fs_root->location.handlers = &yaffs_directory_handlers;
-	mt_entry->mt_fs_root->location.ops = &yaffs_ops;
-	mt_entry->fs_info = dev;
 
 	yaffs_flush_whole_cache(dev);
 	yunlock(dev);
@@ -692,14 +676,14 @@ static void ryfs_fsunmount(rtems_filesystem_mount_table_entry_t *mt_entry)
 	rtems_yaffs_os_unmount(dev);
 }
 
-static void ryfs_lock(rtems_filesystem_mount_table_entry_t *mt_entry)
+static void ryfs_lock(const rtems_filesystem_mount_table_entry_t *mt_entry)
 {
 	struct yaffs_dev *dev = ryfs_get_device_by_mt_entry(mt_entry);
 
 	ylock(dev);
 }
 
-static void ryfs_unlock(rtems_filesystem_mount_table_entry_t *mt_entry)
+static void ryfs_unlock(const rtems_filesystem_mount_table_entry_t *mt_entry)
 {
 	struct yaffs_dev *dev = ryfs_get_device_by_mt_entry(mt_entry);
 
@@ -712,7 +696,7 @@ static const rtems_filesystem_file_handlers_r yaffs_directory_handlers = {
 	.read_h = ryfs_dir_read,
 	.write_h = rtems_filesystem_default_write,
 	.ioctl_h = rtems_filesystem_default_ioctl,
-	.lseek_h = ryfs_dir_lseek,
+	.lseek_h = rtems_filesystem_default_lseek_directory,
 	.fstat_h = ryfs_fstat,
 	.ftruncate_h = rtems_filesystem_default_ftruncate_directory,
 	.fsync_h = ryfs_fsync_or_fdatasync,
@@ -726,7 +710,7 @@ static const rtems_filesystem_file_handlers_r yaffs_file_handlers = {
 	.read_h = ryfs_file_read,
 	.write_h = ryfs_file_write,
 	.ioctl_h = rtems_filesystem_default_ioctl,
-	.lseek_h = ryfs_file_lseek,
+	.lseek_h = rtems_filesystem_default_lseek_file,
 	.fstat_h = ryfs_fstat,
 	.ftruncate_h = ryfs_file_ftruncate,
 	.fsync_h = ryfs_fsync_or_fdatasync,
