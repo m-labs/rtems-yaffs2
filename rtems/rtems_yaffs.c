@@ -493,7 +493,7 @@ static int ryfs_fsync_or_fdatasync(rtems_libio_t *iop)
 
 	ylock(dev);
 	yc = yaffs_flush_file(obj, 0, 1);
-	if (rtems_filesystem_location_is_root(&iop->pathinfo)) {
+	if (rtems_filesystem_location_is_instance_root(&iop->pathinfo)) {
 		yaffs_flush_whole_cache(dev);
 	}
 	yunlock(dev);
