@@ -53,6 +53,13 @@ typedef struct {
   rtems_yaffs_os_handler lock;
   rtems_yaffs_os_handler unlock;
   rtems_yaffs_os_handler unmount;
+
+  /**
+   * @brief The device containing the file system instance.
+   *
+   * This will be used for the st_dev field in stat().
+   */
+  dev_t dev;
 } rtems_yaffs_os_context;
 
 /**
@@ -83,12 +90,12 @@ typedef struct {
 /**
  * @brief YAFFS mount handler.
  *
- * The @a data pointer must point to a completely initizialized
+ * The @a data pointer must point to a completely initialized
  * rtems_yaffs_mount_data structure.  The ownership of the YAFFS device
  * structure changes.  This structure is now owned by the file system layer.
  *
  * @retval 0 Successful operation.
- * @retval -1 An error occured.  The @c errno indicates the error.
+ * @retval -1 An error occurred.  The @c errno indicates the error.
  */
 int rtems_yaffs_mount_handler(
   rtems_filesystem_mount_table_entry_t *mt_entry,
@@ -98,13 +105,13 @@ int rtems_yaffs_mount_handler(
 /**
  * @brief Initializes the default per file system context @a os_context.
  *
- * A binary semaphore with priority inheritence will be used to ensure mutual
+ * A binary semaphore with priority inheritance will be used to ensure mutual
  * exclusion.
  *
  * The umount handler will release all resources of the default context.
  *
  * @retval 0 Successful operation.
- * @retval -1 An error occured.  The @c errno indicates the error.
+ * @retval -1 An error occurred.  The @c errno indicates the error.
  */
 int rtems_yaffs_initialize_default_os_context(
   rtems_yaffs_default_os_context *os_context

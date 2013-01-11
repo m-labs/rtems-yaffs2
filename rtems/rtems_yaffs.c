@@ -398,11 +398,13 @@ static int ryfs_fstat(const rtems_filesystem_location_info_t *loc, struct stat *
 	int rv = 0;
 	struct yaffs_obj *obj = ryfs_get_object_by_location(loc);
 	struct yaffs_dev *dev = obj->my_dev;
+	rtems_yaffs_os_context *os_context = dev->os_context;
 
 	ylock(dev);
 
 	obj = yaffs_get_equivalent_obj(obj);
 	if (obj != NULL) {
+		buf->st_dev = os_context->dev;
 		buf->st_ino = obj->obj_id;
 		buf->st_mode = obj->yst_mode;
 		buf->st_nlink = (nlink_t) yaffs_get_obj_link_count(obj);
