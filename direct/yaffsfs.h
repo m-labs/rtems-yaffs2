@@ -27,7 +27,7 @@
 
 #ifdef __rtems__
 #include <sys/types.h>
-typedef __loff_t loff_t;
+typedef off_t loff_t;
 #endif
 
 //typedef long off_t;
