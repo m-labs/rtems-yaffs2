@@ -431,27 +431,20 @@ static int ryfs_fstat(const rtems_filesystem_location_info_t *loc, struct stat *
 static int ryfs_fchmod(const rtems_filesystem_location_info_t *loc, mode_t mode)
 {
 	int rv = 0;
-	mode_t mode_mask = S_IRWXU | S_IRWXG | S_IRWXO;
+	struct yaffs_obj *obj = ryfs_get_object_by_location(loc);
+	int yc;
 
-	if ((mode & ~mode_mask) == 0) {
-		struct yaffs_obj *obj = ryfs_get_object_by_location(loc);
-		int yc;
-
-		obj = yaffs_get_equivalent_obj(obj);
-		if (obj != NULL) {
-			obj->yst_mode = (obj->yst_mode & ~mode_mask) | mode;
-			obj->dirty = 1;
-			yc = yaffs_flush_file(obj, 0, 0);
-		} else {
-			yc = YAFFS_FAIL;
-		}
-
-		if (yc != YAFFS_OK) {
-			errno = EIO;
-			rv = -1;
-		}
+	obj = yaffs_get_equivalent_obj(obj);
+	if (obj != NULL) {
+		obj->yst_mode = mode;
+		obj->dirty = 1;
+		yc = yaffs_flush_file(obj, 0, 0);
 	} else {
-		errno = EINVAL;
+		yc = YAFFS_FAIL;
+	}
+
+	if (yc != YAFFS_OK) {
+		errno = EIO;
 		rv = -1;
 	}
 
