@@ -213,37 +213,6 @@ static void ryfs_eval_path(rtems_filesystem_eval_path_context_t *ctx)
 
 /* Helper functions */
 
-static rtems_filesystem_node_types_t ryfs_node_type(
-	const rtems_filesystem_location_info_t *loc
-)
-{
-	struct yaffs_obj *obj = ryfs_get_object_by_location(loc);
-	rtems_filesystem_node_types_t type;
-
-	switch (obj->variant_type) {
-		case YAFFS_OBJECT_TYPE_FILE:
-			type = RTEMS_FILESYSTEM_MEMORY_FILE;
-			break;
-		case YAFFS_OBJECT_TYPE_DIRECTORY:
-			type = RTEMS_FILESYSTEM_DIRECTORY;
-			break;
-		case YAFFS_OBJECT_TYPE_SYMLINK:
-			type = RTEMS_FILESYSTEM_SYM_LINK;
-			break;
-		case YAFFS_OBJECT_TYPE_HARDLINK:
-			type = RTEMS_FILESYSTEM_HARD_LINK;
-			break;
-		case YAFFS_OBJECT_TYPE_SPECIAL:
-			type = RTEMS_FILESYSTEM_DEVICE;
-			break;
-		default:
-			type = RTEMS_FILESYSTEM_INVALID_NODE_TYPE;
-			break;
-	}
-
-	return type;
-}
-
 static int ryfs_mknod(
 	const rtems_filesystem_location_info_t *parentloc,
 	const char *name,
@@ -719,7 +688,6 @@ static const rtems_filesystem_operations_table yaffs_ops = {
 	.eval_path_h = ryfs_eval_path,
 	.link_h = rtems_filesystem_default_link,
 	.are_nodes_equal_h = rtems_filesystem_default_are_nodes_equal,
-	.node_type_h = ryfs_node_type,
 	.mknod_h = ryfs_mknod,
 	.rmnod_h = ryfs_rmnod,
 	.fchmod_h = ryfs_fchmod,
