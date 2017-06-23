@@ -68,8 +68,8 @@ clean:
 
 install:  all
 	mkdir -p $(INSTALL_BASE)/include/yaffs
-	install -m 644 -t $(INSTALL_BASE) $(LIB)
-	install -m 644 -t $(INSTALL_BASE)/include/yaffs $(INCLUDES)
+	install -m 644 $(LIB) $(INSTALL_BASE)
+	install -m 644 $(INCLUDES) $(INSTALL_BASE)/include/yaffs
 
 .PHONY: clean install
 
